@@ -1,136 +1,70 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import requests
-import pyshark
+import scapy.all as scapy
 import asyncio
 from datetime import datetime
 from telegram import Bot
 
 # =========== Telegram Settings ===========
-TELEGRAM_BOT_TOKEN = "your_telegram_bot_token"
-TELEGRAM_CHAT_ID = "your_telegram_chat_id"
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
 
-# =========== Country Flags List ===========
-FLAGS = {
-    "CN": "🇨🇳", "US": "🇺🇸", "RU": "🇷🇺", "DE": "🇩🇪", "IQ": "🇮🇶", "IL": "🇮🇱",
-    "FR": "🇫🇷", "UK": "🇬🇧", "IN": "🇮🇳", "SA": "🇸🇦", "TR": "🇹🇷", "AE": "🇦🇪",
-    "BR": "🇧🇷", "JP": "🇯🇵", "CA": "🇨🇦", "AU": "🇦🇺", "KR": "🇰🇷", "IR": "🇮🇷"
-}
+# =========== List of Suspicious MAC Addresses Used in Wifite ===========
+SUSPICIOUS_MAC_PREFIXES = ["00:11:22", "02:", "66:55:44", "DE:AD:BE"]
 
-# =========== Function to Fetch Country Information Using ipinfo.io ===========
-def get_geo_info(ip):
-    """
-    Sends a query to ipinfo.io to obtain information about the IP address.
-    If the query is successful, it extracts the country code and adds the appropriate flag.
-    In case of an error or if data is unavailable, it returns "Unknown".
-    """
-    try:
-        url = f"https://ipinfo.io/{ip}/json"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            country = data.get("country", "Unknown")
-            flag = FLAGS.get(country, "🏴‍☠️")
-            return f"{country} {flag}"
-        else:
-            return "Unknown"
-    except Exception as e:
-        print(f"Error in ipinfo lookup for {ip}: {e}")
-        return "Unknown"
-
-# =========== Send Alert to Telegram Using Asyncio ===========
-def send_alert_to_telegram(source_ip, dest_ip, reason, severity):
-    src_location = get_geo_info(source_ip) if source_ip else "Unknown"
-    dest_location = get_geo_info(dest_ip) if dest_ip else "Unknown"
+# =========== Send Alert to Telegram ===========
+async def send_alert_to_telegram(mac_address, reason, severity):
+    """Send an alert to Telegram using asyncio"""
     current_time = datetime.now().strftime("%H:%M:%S %d-%m-%Y")
+    alert_message = f"""
+<b>🔴 Advanced Security Alert 🔴</b>
 
-    alert_message = (
-        "<b>🔴 Advanced Security Alert 🔴</b>\n\n"
-        "⏰ <b>Time:</b> " + current_time + "\n"
-        "📡 <b>Source:</b> " + source_ip + " (" + src_location + ")\n"
-        "🎯 <b>Destination:</b> " + dest_ip + " (" + dest_location + ")\n"
-        "⚠️ <b>Severity Level:</b> " + severity + "\n\n"
-        "🔍 <b>Possible Reasons:</b>\n"
-        " - " + reason + "\n\n"
-        "🛡️ <b>Immediate Recommendations:</b>\n"
-        "- 🔒 Isolate the affected system immediately.\n"
-        "- 🔍 Conduct a comprehensive network analysis.\n"
-        "- 🚫 Block the source IP range.\n"
-        "- 📱 Enable intensive monitoring."
-    )
+⏰ <b>Time:</b> {current_time}
+🔗 <b>MAC Address:</b> {mac_address}
 
-    async def _send_telegram_message():
-        try:
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=alert_message, parse_mode="HTML")
-            print("🚨 Alert sent to Telegram")
-        except Exception as e:
-            print(f"❌ Failed to send alert to Telegram: {e}")
+⚠️ <b>Threat Level:</b> {severity}
 
-    asyncio.run(_send_telegram_message())
+🔍 <b>Possible Reasons:</b>
+ - {reason}
 
-# =========== Load Tor Exit Nodes List from Text File ===========
-def load_tor_exit_nodes(file_path="tor_exit_nodes.txt"):
-    tor_nodes = set()
+🛡️ <b>Immediate Recommendations:</b>
+- 🔒 Block this device from accessing the network.
+- 🚨 Change the network password immediately.
+- 📊 Disable WPS to secure the network.
+"""
     try:
-        with open(file_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    tor_nodes.add(line)
+        bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=alert_message, parse_mode="HTML")
+        print(f"🚨 Alert sent to Telegram - MAC: {mac_address}")
     except Exception as e:
-        print(f"❌ Failed to load Tor Exit Nodes file: {e}")
-    return tor_nodes
+        print(f"❌ Failed to send alert to Telegram: {e}")
 
-TOR_EXIT_NODES = load_tor_exit_nodes("tor_exit_nodes.txt")
+# =========== Packet Analysis and Attack Detection ===========
+async def detect_wifi_attacks(packet):
+    """Analyze packets to detect Wifite activities, Deauth attacks, and WPS brute-force attempts"""
+    if packet.haslayer(scapy.Dot11):
+        mac_address = packet.addr2
 
-# =========== Analyze Packets and Detect Attacks ===========
-def analyze_packet(packet):
-    try:
-        if not hasattr(packet, 'ip'):
-            return
+        # Detect fake MAC addresses used in Wifite
+        if mac_address and any(mac_address.startswith(prefix) for prefix in SUSPICIOUS_MAC_PREFIXES):
+            await send_alert_to_telegram(mac_address, "⚠️ Suspicious MAC address detected, likely using Wifite", "🟠 Medium")
 
-        source_ip = packet.ip.src
-        dest_ip = packet.ip.dst
+        # Detect Deauthentication Attack
+        if packet.haslayer(scapy.Dot11Deauth):
+            await send_alert_to_telegram(mac_address, "🚨 Deauthentication Attack Detected! Devices are being disconnected from the network", "🔴 High")
 
-        # Detecting Insecure Protocols (HTTP, FTP, Telnet, SMTP, POP3)
-        if hasattr(packet, 'tcp'):
-            dst_port = int(packet.tcp.dstport)
-            insecure_ports = {
-                21: "FTP",
-                23: "Telnet",
-                25: "SMTP",
-                80: "HTTP",
-                110: "POP3"
-            }
-            if dst_port in insecure_ports:
-                proto_name = insecure_ports[dst_port]
-                reason = f"👤 Usage of insecure protocol {proto_name}!"
-                send_alert_to_telegram(source_ip, dest_ip, reason, "🟠 Medium")
-
-        # Detecting Connection with APT (e.g., connecting to suspicious addresses)
-        if source_ip.startswith("103.") or source_ip.startswith("45."):
-            send_alert_to_telegram(source_ip, dest_ip, "⚠️ Detected connection with suspicious APT", "🔴 High")
-
-        # Detecting Tor Usage
-        if source_ip in TOR_EXIT_NODES or dest_ip in TOR_EXIT_NODES:
-            send_alert_to_telegram(source_ip, dest_ip, "🚨 Suspicious connection to Tor Exit Node", "🔴 High")
-
-    except Exception as e:
-        print(f"⚠️ Error analyzing packet: {e}")
+        # Detect WPS Brute Force Attack
+        if packet.haslayer(scapy.Dot11Auth):
+            await send_alert_to_telegram(mac_address, "🚨 WPS Brute Force Attempt Detected!", "🔴 High")
 
 # =========== Start Network Monitoring ===========
-def start_monitoring(interface="wlan0"):
-    print(f"📡 Starting network monitoring on interface: {interface}")
+def start_monitoring(interface="wlan0mon"):
+    print("📡 Starting network monitoring (Monitor Mode required)...")
     try:
-        capture = pyshark.LiveCapture(interface=interface, display_filter="")
-        for packet in capture.sniff_continuously():
-            analyze_packet(packet)
-    except KeyboardInterrupt:
-        print("\n🛑 Monitoring stopped by user.")
+        scapy.sniff(iface=interface, prn=lambda pkt: asyncio.run(detect_wifi_attacks(pkt)), store=False)
     except Exception as e:
-        print(f"❌ Error during monitoring: {e}")
+        print(f"❌ Error occurred while monitoring the network: {e}")
 
 if __name__ == "__main__":
-    start_monitoring("wlan0")
+    start_monitoring("wlan0mon")  # Ensure Monitor Mode is enabled on this interface
